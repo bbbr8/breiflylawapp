@@ -17,16 +17,89 @@
   html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
   canvas{display:block;width:100vw;height:100vh}
   #csvInput{position:absolute;left:-9999px;visibility:hidden}
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;}
+  .modal.hidden{display:none;}
+  .modal-content{background:var(--surface);color:var(--text);padding:20px;border-radius:8px;width:320px;box-shadow:0 4px 14px rgba(0,0,0,.25);display:flex;flex-direction:column;}
+  .modal-content input{margin-top:8px;padding:8px;width:100%;color:var(--text);background:var(--bg);border:1px solid var(--border);border-radius:4px;}
+  .modal-actions{margin-top:16px;display:flex;justify-content:flex-end;gap:8px;}
+  .modal-actions button{padding:6px 12px;border-radius:4px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;}
+  .modal-error{color:var(--danger);font-size:12px;margin-top:4px;}
 </style>
 </head>
 <body>
 <canvas id="app" aria-label="Briefly Dashboard"></canvas>
 <input id="csvInput" type="file" accept=".csv" />
+<div id="modal" class="modal hidden">
+  <form id="modalForm" class="modal-content" role="dialog" aria-modal="true" aria-labelledby="modalLabel">
+    <label id="modalLabel" for="modalInput"></label>
+    <input id="modalInput" type="text" />
+    <div id="modalError" class="modal-error" aria-live="polite"></div>
+    <div class="modal-actions">
+      <button type="submit" id="modalOk">OK</button>
+      <button type="button" id="modalCancel">Cancel</button>
+    </div>
+  </form>
+</div>
 <script>
 /* =========================== Helpers & Setup ============================ */
 const canvas = document.getElementById('app');
 const ctx = canvas.getContext('2d');
 const csvInput = document.getElementById('csvInput');
+const modal = document.getElementById('modal');
+const modalForm = document.getElementById('modalForm');
+const modalLabel = document.getElementById('modalLabel');
+const modalInput = document.getElementById('modalInput');
+const modalCancel = document.getElementById('modalCancel');
+const modalError = document.getElementById('modalError');
+const modalOk = document.getElementById('modalOk');
+let lastFocus = null;
+
+function promptInput(message, def='', validate){
+  return new Promise(resolve=>{
+    lastFocus = document.activeElement;
+    modal.classList.remove('hidden');
+    document.body.style.overflow='hidden';
+    modalLabel.textContent = message;
+    modalError.textContent='';
+    modalInput.value = def;
+    modalInput.select();
+    modalInput.focus();
+
+    function close(val){
+      modal.classList.add('hidden');
+      document.body.style.overflow='';
+      modalForm.removeEventListener('submit', onSubmit);
+      modalCancel.removeEventListener('click', onCancel);
+      modal.removeEventListener('keydown', onKeyDown);
+      resolve(val);
+      if(lastFocus) lastFocus.focus();
+    }
+    function onSubmit(e){
+      e.preventDefault();
+      const val = modalInput.value.trim();
+      if(!validate || validate(val)){
+        close(val);
+      }else{
+        modalError.textContent = 'Invalid input';
+      }
+    }
+    function onCancel(){ close(null); }
+    function onKeyDown(e){
+      if(e.key==='Escape'){ onCancel(); }
+      if(e.key==='Tab'){
+        const focusables=[modalInput, modalOk, modalCancel];
+        const idx=focusables.indexOf(document.activeElement);
+        const dir=e.shiftKey?-1:1;
+        const next=(idx+dir+focusables.length)%focusables.length;
+        focusables[next].focus();
+        e.preventDefault();
+      }
+    }
+    modalForm.addEventListener('submit', onSubmit);
+    modalCancel.addEventListener('click', onCancel);
+    modal.addEventListener('keydown', onKeyDown);
+  });
+}
 let DPR = window.devicePixelRatio || 1;
 
 const NCur = new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'});
@@ -368,7 +441,7 @@ function drawCategoryRow(card,cat,x,y,w){
   const appliedStr = cat.applied ? ` (+${formatCurrency(cat.applied)})` : ''; const amountStr = `${formatCurrency(cat.base+(cat.applied||0))}${appliedStr}`;
   textM(14); const amtW = ctx.measureText(amountStr).width; ctx.fillText(amountStr, x + w - 90 - amtW - 10, y + S.catRowH/2);
   const bx = x + w - 90, by = y + (S.catRowH-30)/2, bw = 80, bh = 30; rr(bx,by,bw,bh,8); ctx.strokeStyle=getCss('--border'); ctx.stroke(); textM(13); ctx.textAlign='center'; ctx.fillStyle=getCss('--text'); ctx.fillText('EDIT', bx+bw/2, by+bh/2); ctx.textAlign='left';
-  addRegion({x:bx,y:by,w:bw,h:bh,cursor:'pointer',onClick:()=>{ const v=prompt(`Edit ${cat.label} amount`, formatCurrency(cat.base)); if(v!=null){ cat.base=Math.max(0,parseCurrency(v)); saveAll(); draw(); toast('Saved'); } }});
+  addRegion({x:bx,y:by,w:bw,h:bh,cursor:'pointer',onClick:async()=>{ const v=await promptInput(`Edit ${cat.label} amount`, formatCurrency(cat.base), val=>!isNaN(parseCurrency(val))); if(v!=null){ cat.base=Math.max(0,parseCurrency(v)); saveAll(); draw(); toast('Saved'); } }});
   return S.catRowH + 8;
 }
 function drawSwitch(x, cy, checked, onToggle){ const w=42,h=22,r=h/2; rr(x,cy-h/2,w,h,r); ctx.fillStyle=checked?getCss('--accent'):'#CBD5E1'; ctx.fill(); const kx=x+(checked?w-h+2:2); rr(kx,cy-h/2+2,h-4,h-4,r); ctx.fillStyle='#fff'; ctx.fill(); addRegion({x:x,y:cy-h/2,w:w,h:h,cursor:'pointer',onClick:onToggle}); return w+4; }
@@ -395,13 +468,13 @@ function drawTable(card,x,y,w){
   card.table.forEach((r)=>{
     let cx2=x;
     // Line
-    ctx.strokeStyle=getCss('--border'); ctx.strokeRect(cx2,cy,cols[0].w,S.tableRowH); textR(14); ctx.textBaseline='middle'; ctx.fillStyle=getCss('--text'); ctx.save(); ctx.beginPath(); ctx.rect(cx2+8,cy,cols[0].w-16,S.tableRowH); ctx.clip(); ctx.fillText(String(r.lineItem||''), cx2+8, cy+S.tableRowH/2); ctx.restore(); addRegion({x:cx2,y:cy,w:cols[0].w,h:S.tableRowH,cursor:'text',onClick:()=>{ const v=prompt('Line Item', r.lineItem||''); if(v!=null){ r.lineItem=v; saveAll(); draw(); }}}); cx2+=cols[0].w;
+    ctx.strokeStyle=getCss('--border'); ctx.strokeRect(cx2,cy,cols[0].w,S.tableRowH); textR(14); ctx.textBaseline='middle'; ctx.fillStyle=getCss('--text'); ctx.save(); ctx.beginPath(); ctx.rect(cx2+8,cy,cols[0].w-16,S.tableRowH); ctx.clip(); ctx.fillText(String(r.lineItem||''), cx2+8, cy+S.tableRowH/2); ctx.restore(); addRegion({x:cx2,y:cy,w:cols[0].w,h:S.tableRowH,cursor:'text',onClick:async()=>{ const v=await promptInput('Line Item', r.lineItem||''); if(v!=null){ r.lineItem=v; saveAll(); draw(); }}}); cx2+=cols[0].w;
     // Cost
-    ctx.strokeRect(cx2,cy,cols[1].w,S.tableRowH); ctx.fillText(formatCurrency(r.cost||0), cx2+8, cy+S.tableRowH/2); addRegion({x:cx2,y:cy,w:cols[1].w,h:S.tableRowH,cursor:'text',onClick:()=>{ const v=prompt('Cost ($)', formatCurrency(r.cost||0)); if(v!=null){ r.cost=Math.max(0,parseCurrency(v)); saveAll(); draw(); }}}); cx2+=cols[1].w;
+    ctx.strokeRect(cx2,cy,cols[1].w,S.tableRowH); ctx.fillText(formatCurrency(r.cost||0), cx2+8, cy+S.tableRowH/2); addRegion({x:cx2,y:cy,w:cols[1].w,h:S.tableRowH,cursor:'text',onClick:async()=>{ const v=await promptInput('Cost ($)', formatCurrency(r.cost||0), val=>!isNaN(parseCurrency(val))); if(v!=null){ r.cost=Math.max(0,parseCurrency(v)); saveAll(); draw(); }}}); cx2+=cols[1].w;
     // Cap
-    ctx.strokeRect(cx2,cy,cols[2].w,S.tableRowH); ctx.fillText(String(Number(r.capPercent||0)), cx2+8, cy+S.tableRowH/2); addRegion({x:cx2,y:cy,w:cols[2].w,h:S.tableRowH,cursor:'text',onClick:()=>{ const v=prompt('Contingency Cap (%)', String(r.capPercent||0)); if(v!=null){ r.capPercent=clamp(Number(v)||0,0,1000); saveAll(); draw(); }}}); cx2+=cols[2].w;
+    ctx.strokeRect(cx2,cy,cols[2].w,S.tableRowH); ctx.fillText(String(Number(r.capPercent||0)), cx2+8, cy+S.tableRowH/2); addRegion({x:cx2,y:cy,w:cols[2].w,h:S.tableRowH,cursor:'text',onClick:async()=>{ const v=await promptInput('Contingency Cap (%)', String(r.capPercent||0), val=>!isNaN(Number(val))); if(v!=null){ r.capPercent=clamp(Number(v)||0,0,1000); saveAll(); draw(); }}}); cx2+=cols[2].w;
     // Budget key
-    ctx.strokeRect(cx2,cy,cols[3].w,S.tableRowH); const label=(r.budgetKey==='none')?'None':(card.categories.find(c=>c.key===r.budgetKey)?.label||'None'); ctx.fillText(label, cx2+8, cy+S.tableRowH/2); addRegion({x:cx2,y:cy,w:cols[3].w,h:S.tableRowH,cursor:'pointer',onClick:()=>{ const opts=['none',...card.categories.map(c=>c.key)]; const v=prompt(`Add to Budget (options: ${opts.join(', ')})`, r.budgetKey||'none'); if(v!=null && opts.includes(v)){ r.budgetKey=v; saveAll(); draw(); }}}); cx2+=cols[3].w;
+    ctx.strokeRect(cx2,cy,cols[3].w,S.tableRowH); const label=(r.budgetKey==='none')?'None':(card.categories.find(c=>c.key===r.budgetKey)?.label||'None'); ctx.fillText(label, cx2+8, cy+S.tableRowH/2); addRegion({x:cx2,y:cy,w:cols[3].w,h:S.tableRowH,cursor:'pointer',onClick:async()=>{ const opts=['none',...card.categories.map(c=>c.key)]; const v=await promptInput(`Add to Budget (options: ${opts.join(', ')})`, r.budgetKey||'none', val=>opts.includes(val)); if(v!=null){ r.budgetKey=v; saveAll(); draw(); }}}); cx2+=cols[3].w;
     // Apply
     ctx.strokeRect(cx2,cy,cols[4].w,S.tableRowH); const bx=cx2+cols[4].w-74, by=cy+(S.tableRowH-22)/2, bw=22, bh=22; rr(bx,by,bw,bh,4); ctx.strokeStyle=getCss('--border'); ctx.stroke(); if(r.apply){ ctx.fillStyle=getCss('--brand'); ctx.fillRect(bx+4,by+4,bw-8,bh-8); } muted(13); ctx.textBaseline='middle'; ctx.fillStyle=getCss('--muted'); ctx.fillText('Apply', bx-52, by+bh/2); addRegion({x:bx,y:by,w:bw,h:bh,cursor:'pointer',onClick:()=>{ r.apply=!r.apply; saveAll(); draw(); }}); cx2+=cols[4].w;
     // Diff
