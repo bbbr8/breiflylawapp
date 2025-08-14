@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Briefly Dashboard — Canvas</title>
+<style>
+  :root{
+    --bg:#0B1220; --surface:#0F172A; --text:#E5E7EB; --muted:#9CA3AF; --border:#1F2937;
+    --brand:#2563EB; --accent:#10B981; --warn:#F59E0B; --danger:#DC2626;
+  }
+  @media (prefers-color-scheme: light){
+    :root{
+      --bg:#F6F8FB; --surface:#FFFFFF; --text:#0F172A; --muted:#6B7280; --border:#E5E7EB;
+    }
+  }
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
+  canvas{display:block;width:100vw;height:100vh}
+  #csvInput{position:absolute;left:-9999px;visibility:hidden}
+</style>
+</head>
+<body>
+<canvas id="app" aria-label="Briefly Dashboard"></canvas>
+<input id="csvInput" type="file" accept=".csv" />
+<script>
+/* =========================== Helpers & Setup ============================ */
+const canvas = document.getElementById('app');
+const ctx = canvas.getContext('2d');
+const csvInput = document.getElementById('csvInput');
+let DPR = window.devicePixelRatio || 1;
+
+const NCur = new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'});
+function formatCurrency(n){ return NCur.format(Number(n||0)); }
+function parseCurrency(str){ if(typeof str==='number') return str; return Number(String(str||'').replace(/[^0-9.\-]/g,''))||0; }
+function clamp(n,min,max){ return Math.max(min, Math.min(max,n)); }
+function rr(x,y,w,h,r=10){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+function shadow(on=true){ ctx.shadowColor = on ? 'rgba(0,0,0,.18)' : 'transparent'; ctx.shadowBlur = on ? 14 : 0; ctx.shadowOffsetY = on ? 4 : 0; }
+function textB(s=16){ ctx.font=`600 ${s}px ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial`; ctx.fillStyle=getCss('--text'); }
+function textM(s=14){ ctx.font=`500 ${s}px ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial`; ctx.fillStyle=getCss('--text'); }
+function textR(s=14){ ctx.font=`400 ${s}px ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial`; ctx.fillStyle=getCss('--text'); }
+function muted(s=13){ ctx.font=`400 ${s}px ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial`; ctx.fillStyle=getCss('--muted'); }
+function getCss(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+function clear(){ ctx.clearRect(0,0,canvas.width,canvas.height); }
+function setDPR(){
+  DPR = window.devicePixelRatio || 1;
+  const cw = Math.floor(window.innerWidth);
+  const ch = Math.floor(window.innerHeight);
+  canvas.width = Math.floor(cw * DPR);
+  canvas.height = Math.floor(ch * DPR);
+  canvas.style.width = cw+'px';
+  canvas.style.height = ch+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+}
+addEventListener('resize', ()=>{ setDPR(); draw(); });
+
+/* =========================== State & Persistence ============================ */
+function uid(p){ return `${p}_${Math.random().toString(36).slice(2,9)}`; }
+function blankRow(){ return { id: uid('row'), lineItem:'', cost:0, capPercent:0, budgetKey:'none', apply:false }; }
+function load(k,def){ try{ return JSON.parse(localStorage.getItem(k) || JSON.stringify(def)); }catch{ return def; } }
+function save(k,v){ localStorage.setItem(k, JSON.stringify(v)); }
+
+const defaultCards = [
+  {
+    id: uid('card'), title:'REPC / Contract', pinned:true,
+    expanded:false, expanded2:false,
+    categories:[
+      {key:'construction',label:'Construction',on:true, base:630000},
+      {key:'contingency', label:'Contingency', on:true, base:40000},
+      {key:'land',        label:'Land',        on:true, base:65000},
+      {key:'slab',        label:'Slab',        on:false,base:18000},
+      {key:'wallFence',   label:'Wall/Fence',  on:false,base:12500},
+      {key:'pool',        label:'Pool',        on:false,base:0},
+      {key:'furniture',   label:'Furniture',   on:false,base:26756},
+    ],
+    table:[]
+  },
+  { id: uid('card'), title:'Budget 2', pinned:true, expanded:false, expanded2:false,
+    categories:[
+      {key:'construction',label:'Construction',on:true, base:630000*0.9},
+      {key:'contingency', label:'Contingency', on:true, base:40000*0.9},
+      {key:'land',        label:'Land',        on:true, base:65000*0.9},
+      {key:'slab',        label:'Slab',        on:false,base:18000*0.9},
+      {key:'wallFence',   label:'Wall/Fence',  on:false,base:12500*0.9},
+      {key:'pool',        label:'Pool',        on:false,base:0},
+      {key:'furniture',   label:'Furniture',   on:false,base:26756*0.9},
+    ],
+    table:[]
+  },
+  { id: uid('card'), title:'Budget 3', pinned:false, expanded:false, expanded2:false,
+    categories:[
+      {key:'construction',label:'Construction',on:true, base:630000*1.1},
+      {key:'contingency', label:'Contingency', on:true, base:40000*1.1},
+      {key:'land',        label:'Land',        on:true, base:65000*1.1},
+      {key:'slab',        label:'Slab',        on:false,base:18000*1.1},
+      {key:'wallFence',   label:'Wall/Fence',  on:false,base:12500*1.1},
+      {key:'pool',        label:'Pool',        on:false,base:0},
+      {key:'furniture',   label:'Furniture',   on:false,base:26756*1.1},
+    ],
+    table:[]
+  }
+];
+
+const state = {
+  cards: load('briefly.canvas.cards', defaultCards),
+  layout: load('briefly.canvas.layout', {stack:false}),
+  ui: { menuOpen:false }
+};
+function saveAll(){ save('briefly.canvas.cards', state.cards); save('briefly.canvas.layout', state.layout); }
+
+/* =========================== Hit Regions ============================ */
+let regions = [];
+function addRegion(r){ regions.push(r); }
+function hit(x,y){ for(let i=regions.length-1;i>=0;i--){ const r=regions[i]; if(x>=r.x&&y>=r.y&&x<=r.x+r.w&&y<=r.y+r.h) return r; } return null; }
+canvas.addEventListener('mousemove',(e)=>{ const p=pt(e); canvas.style.cursor = hit(p.x,p.y)?.cursor||'default'; });
+canvas.addEventListener('click',(e)=>{ const p=pt(e); const r=hit(p.x,p.y); if(r&&r.onClick) r.onClick(p); });
+function pt(e){ const r=canvas.getBoundingClientRect(); return {x:e.clientX-r.left, y:e.clientY-r.top}; }
+
+/* =========================== Metrics ============================ */
+const S = { pad:16, gap:16, radius:12,
+  headerH:56, summaryH:132, tabsH:48, rowHeadH:44,
+  cardHeaderH:56, pillH:28, chartH:140, catRowH:46,
+  lvl2HeaderH:50, toolsH:44, tableHeadH:36, tableRowH:36 };
+function gridCols(w){ if(state.layout.stack) return 1; if(w<540) return 1; if(w<1024) return 2; return 3; }
+
+/* =========================== Background (subtle lines, behind UI) ============================ */
+function drawBackground(x0, y0, w, h){
+  ctx.save();
+  ctx.globalAlpha = 0.06;               // <<— sits in the back
+  ctx.strokeStyle = '#ffffff';          // auto looks good on dark; is subtle on light
+  ctx.lineWidth = 1;
+  const step = 120;
+  for(let i=-w;i<w*2;i+=step){
+    ctx.beginPath();
+    ctx.moveTo(x0+i, y0);
+    ctx.bezierCurveTo(x0+i+60, y0+h*0.33, x0+i-60, y0+h*0.66, x0+i+40, y0+h);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+/* =========================== UI State ============================ */
+const ui = {};
+
+/* =========================== Draw ============================ */
+function draw(){
+  regions = [];
+  clear();
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  const maxW = Math.min(W, 1200);
+  const x0 = Math.floor((W - maxW)/2);
+
+  // Background FIRST so it never covers UI
+  drawBackground(0, 0, W, H);
+
+  drawHeader(x0, 0, maxW, S.headerH);
+
+  let y = S.headerH + S.gap;
+  drawSummary(x0, y, maxW, S.summaryH);
+  y += S.summaryH + S.gap;
+
+  drawTabs(x0, y, maxW, S.tabsH);
+  y += S.tabsH + S.gap;
+
+  y += drawRowHead(x0, y, maxW, S.rowHeadH) + S.gap;
+
+  y += drawCardsGrid(x0, y, maxW) + S.gap;
+
+  if(state.ui.menuOpen) drawHeaderMenu(x0 + maxW - 280 - S.pad, S.headerH + 8, 280, Math.min(420, H - S.headerH - 24));
+}
+
+/* =========================== Header & Menu ============================ */
+function drawHeader(x,y,w,h){
+  ctx.save();
+  ctx.fillStyle=getCss('--surface');
+  ctx.strokeStyle=getCss('--border');
+  ctx.fillRect(x,y,w,h);
+  ctx.beginPath(); ctx.moveTo(x,y+h+.5); ctx.lineTo(x+w,y+h+.5); ctx.stroke();
+
+  const by = y + h/2;
+  textM(18); ctx.textBaseline='middle'; ctx.fillStyle=getCss('--text');
+  ctx.fillText('←', x+S.pad, by);
+  addRegion({x:x+S.pad-8,y:by-16,w:32,h:32,cursor:'pointer',onClick:()=>toast('Home')}});
+
+  textB(18); ctx.fillText('Briefly Dashboard', x + S.pad*3, by);
+
+  const mx = x + w - S.pad - 32;
+  rr(mx, y+(h-32)/2, 32, 32, 8); ctx.fillStyle=getCss('--surface'); ctx.fill(); ctx.strokeStyle=getCss('--border'); ctx.stroke();
+  textM(22); ctx.fillStyle=getCss('--text'); ctx.fillText('⋯', mx+9, by+1);
+  addRegion({x:mx,y:y+(h-32)/2,w:32,h:32,cursor:'pointer',onClick:()=>{ state.ui.menuOpen=!state.ui.menuOpen; draw(); }});
+  ctx.restore();
+}
+
+function drawHeaderMenu(x,y,w,maxH){
+  // sections: Tabs, Add New Card, Pinned list with toggle
+  const line = ()=>{ ctx.strokeStyle=getCss('--border'); ctx.beginPath(); ctx.moveTo(x+8, cy); ctx.lineTo(x+w-8, cy); ctx.stroke(); cy+=1; };
+
+  // compute dynamic height
+  const itemH = 36;
+  const visibleCards = state.cards;
+  let needed = 8 + (5*itemH) + 8 + itemH + 8 + (visibleCards.length*itemH) + 8;
+  const h = Math.min(maxH, needed);
+
+  ctx.save();
+  shadow(true); rr(x,y,w,h,10); ctx.fillStyle=getCss('--surface'); ctx.fill(); shadow(false); ctx.strokeStyle=getCss('--border'); ctx.stroke();
+
+  let cy = y+8;
+  // Tabs
+  const tabs = ['Home','Report','Messages','Reports','Dashboard'];
+  tabs.forEach(t=>{
+    textM(14); ctx.textBaseline='middle'; ctx.fillStyle=getCss('--text'); ctx.fillText(t, x+12, cy+itemH/2);
+    addRegion({x:x,y:cy,w:w,h:itemH,cursor:'pointer',onClick:()=>toast(t)});
+    cy+=itemH;
+  });
+  line(); cy+=7;
+
+  // Add New Card
+  textB(14); ctx.fillStyle=getCss('--text'); ctx.fillText('+ Add New Card', x+12, cy+itemH/2);
+  addRegion({x:x,y:cy,w:w,h:itemH,cursor:'pointer',onClick:()=>{ addNewCard(); state.ui.menuOpen=false; draw(); }});
+  cy+=itemH;
+  line(); cy+=7;
+
+  // Pinned cards
+  textM(12); muted(12); ctx.fillText('Pinned on Board', x+12, cy+itemH/2);
+  cy+=itemH;
+
+  visibleCards.forEach((card,i)=>{
+    const label = (card.pinned ? '📌 ' : '• ') + card.title;
+    textM(14); ctx.fillStyle=getCss('--text'); ctx.fillText(label, x+12, cy+itemH/2);
+    // right-side toggle
+    const bx = x+w-86, by = cy+6, bw=74, bh=24;
+    rr(bx,by,bw,bh,6); ctx.strokeStyle=getCss('--border'); ctx.stroke();
+    textM(12); ctx.textAlign='center'; ctx.fillText(card.pinned?'Unpin':'Pin', bx+bw/2, cy+itemH/2);
+    ctx.textAlign='left';
+    addRegion({x:x,y:cy,w:w,h:itemH,cursor:'pointer',onClick:()=>{ card.pinned=!card.pinned; saveAll(); draw(); }});
+    cy+=itemH;
+  });
+
+  ctx.restore();
+}
+
+/* =========================== Summary / Tabs / Row head ============================ */
+function drawSummary(x,y,w,h){
+  ctx.save();
+  shadow(true); rr(x,y,w,h,S.radius); ctx.fillStyle=getCss('--surface'); ctx.fill(); shadow(false); ctx.strokeStyle=getCss('--border'); ctx.stroke();
+
+  const leftW = w*0.66;
+  const lx = x + S.pad, ly = y + S.pad;
+  const rows = [['Client Name','Bryce Jones'],['Project Name','1158 S 980 W — Mapleton, UT'],['Address','1158 S 980 W, Mapleton, UT 84664'],['Case ID','C-0192']];
+  let rY = ly;
+  rows.forEach(([k,v])=>{ muted(13); ctx.fillText(k,lx,rY); textR(15); ctx.fillStyle=getCss('--text'); ctx.fillText(v,lx+140,rY); rY+=24; });
+
+  const rx = x + leftW; const ry = y + S.pad;
+  drawBadge(rx + S.pad, ry, 'Status: Active'); drawBadge(rx + S.pad + 130, ry, 'Data Health: Good');
+  ctx.restore();
+}
+function drawBadge(x,y,txt){ textM(12); const m = ctx.measureText(txt); const w = m.width+20, h = 24; rr(x,y,w,h,999); ctx.fillStyle='rgba(37,99,235,.10)'; ctx.fill(); ctx.strokeStyle=getCss('--border'); ctx.stroke(); textM(12); ctx.textBaseline='middle'; ctx.fillStyle=getCss('--text'); ctx.fillText(txt,x+10,y+h/2); }
+
+function drawTabs(x,y,w,h){
+  ctx.save(); rr(x,y,w,h,10); shadow(true); ctx.fillStyle=getCss('--surface'); ctx.fill(); shadow(false); ctx.strokeStyle=getCss('--border'); ctx.stroke();
+  const items=['Home','Reports','Messages','Notes','Add Card']; let cx=x+S.pad, cy=y+h/2;
+  items.forEach(t=>{ const tw=ctx.measureText(t).width+20, th=28; rr(cx, y+(h-th)/2, tw, th, 8); ctx.fillStyle=(t==='Home')?'rgba(37,99,235,.10)':'transparent'; ctx.fill(); if(t==='Home'){ ctx.strokeStyle=getCss('--brand'); ctx.beginPath(); ctx.moveTo(cx,y+h-.5); ctx.lineTo(cx+tw,y+h-.5); ctx.stroke(); } ctx.fillStyle=(t==='Home')?getCss('--brand'):getCss('--muted'); textM(14); ctx.textBaseline='middle'; ctx.fillText(t,cx+10,cy); addRegion({x:cx,y:y+(h-th)/2,w:tw,h:th,cursor:'pointer',onClick:()=>{ if(t==='Add Card') addNewCard(); else toast(t); }}); cx+=tw+12; });
+  ctx.restore();
+}
+
+function drawRowHead(x,y,w,h){
+  ctx.save(); const cy=y+h/2; textM(16); ctx.textBaseline='middle'; ctx.fillStyle=getCss('--text'); ctx.fillText('Dashboard Cards', x, cy); muted(13); ctx.fillText('Tools', x+150, cy);
+  const bw=110,bh=32,bx=x+w-bw,by=y+(h-bh)/2; rr(bx,by,bw,bh,10); shadow(true); ctx.fillStyle=getCss('--brand'); ctx.fill(); shadow(false);
+  textM(14); ctx.fillStyle='#fff'; ctx.fillText('Add New +', bx+16, by+bh/2);
+  addRegion({x:bx,y:by,w:bw,h:bh,cursor:'pointer',onClick:addNewCard});
+  ctx.restore(); return h;
+}
+
+/* =========================== Cards ============================ */
+function visibleCards(){ return state.cards.filter(c=>c.pinned); }
+
+function drawCardsGrid(x,y,w){
+  ctx.save();
+  const cols = gridCols(w);
+  const colW = Math.floor((w - (cols-1)*S.gap)/cols);
+  const cards = visibleCards();
+  const heights = cards.map(c=>cardHeight(c,colW));
+  let usedY = y;
+  for(let i=0;i<cards.length;i+=cols){
+    const row = cards.slice(i,i+cols);
+    const rowHs = heights.slice(i,i+cols);
+    const rowH = Math.max(...rowHs);
+    for(let j=0;j<row.length;j++){
+      const cx = x + j*(colW + S.gap);
+      drawCard(row[j], cx, y, colW, rowH);
+    }
+    y += rowH + S.gap;
+  }
+  ctx.restore();
+  return y - usedY;
+}
+function cardHeight(card,w){
+  let h = S.cardHeaderH + 30 + S.pad*2;
+  if(card.expanded){
+    h += S.chartH + S.pad;
+    h += card.categories.length * S.catRowH + S.pad;
+    h += S.lvl2HeaderH;
+    if(card.expanded2) h += S.toolsH + S.tableHeadH + Math.max(1, card.table.length)*S.tableRowH + S.pad;
+  }
+  return h;
+}
+function computeAppliedMap(card){ const map={}; for(const r of card.table){ if(r.apply && r.budgetKey && r.budgetKey!=='none'){ map[r.budgetKey]=(map[r.budgetKey]||0)+(Number(r.cost)||0); } } return map; }
+function cardTotals(card){ const applied=computeAppliedMap(card); const cats=card.categories.map(c=>({...c,amount:c.base+(applied[c.key]||0),applied:(applied[c.key]||0)})); const total=cats.filter(c=>c.on).reduce((a,c)=>a+c.amount,0); return {cats,total}; }
+
+function drawCard(card,x,y,w,fillH){
+  ctx.save();
+  const targetH = Math.max(cardHeight(card,w), fillH||0);
+  shadow(true); rr(x,y,w,targetH,S.radius); ctx.fillStyle=getCss('--surface'); ctx.fill(); shadow(false); ctx.strokeStyle=getCss('--border'); ctx.stroke();
+
+  let cy = y + S.pad;
+  const {cats,total} = cardTotals(card);
+
+  // header
+  const header = {x, y:cy, w, h:S.cardHeaderH};
+  textB(16); ctx.textBaseline='middle'; ctx.fillStyle=getCss('--text'); ctx.fillText(card.title, header.x+S.pad, header.y+header.h/2);
+  textB(16); ctx.textAlign='right'; ctx.fillText(formatCurrency(total), header.x+header.w-S.pad-22, header.y+header.h/2); ctx.textAlign='left';
+  // caret
+  ctx.translate(header.x + header.w - S.pad - 12, header.y + header.h/2);
+  ctx.fillStyle=getCss('--muted'); ctx.beginPath(); if(card.expanded){ ctx.moveTo(-6,4); ctx.lineTo(0,-4); ctx.lineTo(6,4);} else { ctx.moveTo(-6,-2); ctx.lineTo(0,6); ctx.lineTo(6,-2);} ctx.closePath(); ctx.fill();
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  addRegion({x:header.x,y:header.y,w:header.w,h:header.h,cursor:'pointer',onClick:()=>{ card.expanded=!card.expanded; saveAll(); draw(); }});
+  cy += S.cardHeaderH;
+
+  // pills
+  cy += drawPills(cats.filter(c=>c.on).map(c=>c.label), x+S.pad, cy+6, w-S.pad*2) + 6;
+
+  if(card.expanded){
+    cy += drawDonut(cats.filter(c=>c.on && c.amount>0), x, cy, w) + S.pad;
+    for(const c of cats){ cy += drawCategoryRow(card,c,x+S.pad,cy,w-S.pad*2); }
+    cy += 6;
+
+    const lvl2 = {x, y:cy, w, h:S.lvl2HeaderH};
+    textB(15); ctx.textBaseline='middle'; ctx.fillStyle=getCss('--text'); ctx.fillText('Data Table & Upload', lvl2.x+S.pad, lvl2.y+lvl2.h/2);
+    // caret
+    ctx.translate(lvl2.x + lvl2.w - S.pad - 12, lvl2.y + lvl2.h/2); ctx.fillStyle=getCss('--muted'); ctx.beginPath();
+    if(card.expanded2){ ctx.moveTo(-6,4); ctx.lineTo(0,-4); ctx.lineTo(6,4);} else { ctx.moveTo(-6,-2); ctx.lineTo(0,6); ctx.lineTo(6,-2);}
+    ctx.closePath(); ctx.fill(); ctx.setTransform(DPR,0,0,DPR,0,0);
+    addRegion({x:lvl2.x,y:lvl2.y,w:lvl2.w,h:lvl2.h,cursor:'pointer',onClick:()=>{ card.expanded2=!card.expanded2; saveAll(); draw(); }});
+    cy += S.lvl2HeaderH;
+
+    if(card.expanded2){ cy += drawToolsRow(card, x+S.pad, cy, w-S.pad*2); cy += drawTable(card, x+S.pad, cy, w-S.pad*2); }
+  }
+  ctx.restore();
+}
+
+function drawPills(labels,x,y,w){
+  ctx.save(); const cy=y+S.pillH/2; let cx=x; labels.slice(0,3).forEach(l=>{ textM(12); const tw=ctx.measureText(l).width; const pw=tw+16; if(cx+pw>x+w) return; rr(cx,y,pw,S.pillH,999); ctx.strokeStyle=getCss('--border'); ctx.stroke(); textM(12); ctx.textBaseline='middle'; ctx.fillText(l,cx+8,cy); cx+=pw+8; }); if(labels.length>3){ const more=`+${labels.length-3} more`; const tw=ctx.measureText(more).width; const pw=tw+16; rr(cx,y,pw,S.pillH,999); ctx.strokeStyle=getCss('--border'); ctx.stroke(); textM(12); ctx.fillText(more,cx+8,cy); } ctx.restore(); return S.pillH; }
+
+function drawDonut(data,x,y,w){
+  ctx.save(); const cx=x+w/2, r=Math.min(100,w/2-40), cy=y+r+14;
+  if(!data.length){ ctx.strokeStyle=getCss('--border'); ctx.setLineDash([4,4]); rr(x+S.pad,y,w-S.pad*2,S.chartH,10); ctx.stroke(); ctx.setLineDash([]); muted(13); ctx.textBaseline='middle'; ctx.textAlign='center'; ctx.fillText('Select categories to visualize the budget split.', x+w/2, y+S.chartH/2); ctx.textAlign='left'; ctx.restore(); return S.chartH; }
+  const palette=['#2563EB','#10B981','#F59E0B','#EF4444','#8B5CF6','#14B8A6','#F97316'];
+  const sum=data.reduce((a,c)=>a+c.amount,0); let start=-Math.PI/2,i=0;
+  data.forEach(d=>{ const ang=(d.amount/sum)*Math.PI*2; ctx.beginPath(); ctx.moveTo(cx,cy); ctx.fillStyle=palette[i++%palette.length]; ctx.arc(cx,cy,r,start,start+ang); ctx.closePath(); ctx.fill(); start+=ang; });
+  ctx.globalCompositeOperation='destination-out'; ctx.beginPath(); ctx.arc(cx,cy,r*0.62,0,Math.PI*2); ctx.fill(); ctx.globalCompositeOperation='source-over';
+  muted(12); ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText('Selected Total', cx, cy-6); textB(16); ctx.fillStyle=getCss('--text'); ctx.fillText(formatCurrency(sum), cx, cy+14); ctx.textAlign='left'; ctx.restore(); return S.chartH;
+}
+
+function drawCategoryRow(card,cat,x,y,w){
+  rr(x,y,w,S.catRowH,10); ctx.strokeStyle=getCss('--border'); ctx.setLineDash([3,3]); ctx.stroke(); ctx.setLineDash([]);
+  const sw = drawSwitch(x+10, y+S.catRowH/2, cat.on, ()=>{ cat.on=!cat.on; saveAll(); draw(); });
+  textM(14); ctx.textBaseline='middle'; ctx.fillStyle=getCss('--text'); ctx.fillText(cat.label, x+10+sw+10, y+S.catRowH/2);
+  const appliedStr = cat.applied ? ` (+${formatCurrency(cat.applied)})` : ''; const amountStr = `${formatCurrency(cat.base+(cat.applied||0))}${appliedStr}`;
+  textM(14); const amtW = ctx.measureText(amountStr).width; ctx.fillText(amountStr, x + w - 90 - amtW - 10, y + S.catRowH/2);
+  const bx = x + w - 90, by = y + (S.catRowH-30)/2, bw = 80, bh = 30; rr(bx,by,bw,bh,8); ctx.strokeStyle=getCss('--border'); ctx.stroke(); textM(13); ctx.textAlign='center'; ctx.fillStyle=getCss('--text'); ctx.fillText('EDIT', bx+bw/2, by+bh/2); ctx.textAlign='left';
+  addRegion({x:bx,y:by,w:bw,h:bh,cursor:'pointer',onClick:()=>{ const v=prompt(`Edit ${cat.label} amount`, formatCurrency(cat.base)); if(v!=null){ cat.base=Math.max(0,parseCurrency(v)); saveAll(); draw(); toast('Saved'); } }});
+  return S.catRowH + 8;
+}
+function drawSwitch(x, cy, checked, onToggle){ const w=42,h=22,r=h/2; rr(x,cy-h/2,w,h,r); ctx.fillStyle=checked?getCss('--accent'):'#CBD5E1'; ctx.fill(); const kx=x+(checked?w-h+2:2); rr(kx,cy-h/2+2,h-4,h-4,r); ctx.fillStyle='#fff'; ctx.fill(); addRegion({x:x,y:cy-h/2,w:w,h:h,cursor:'pointer',onClick:onToggle}); return w+4; }
+
+function drawToolsRow(card,x,y,w){
+  const b1={x:x,y:y+(S.toolsH-32)/2,w:120,h:32,label:'Upload CSV'};
+  const b2={x:x+130,y:b1.y,w:110,h:32,label:'+ Add Row'};
+  drawBtn(b1); drawBtn(b2);
+  addRegion({...b1,cursor:'pointer',onClick:()=>{ csvInput.click(); currentCsvCard=card; }});
+  addRegion({...b2,cursor:'pointer',onClick:()=>{ card.table.push(blankRow()); saveAll(); draw(); }});
+  muted(12); ctx.textBaseline='middle'; ctx.fillText('CSV headers: line_item,cost,cap_percent,add_to_budget', x+260, y+S.toolsH/2);
+  return S.toolsH;
+}
+function drawBtn(b){ rr(b.x,b.y,b.w,b.h,8); shadow(true); ctx.fillStyle=getCss('--surface'); ctx.fill(); shadow(false); ctx.strokeStyle=getCss('--border'); ctx.stroke(); textM(13); ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillStyle=getCss('--text'); ctx.fillText(b.label, b.x+b.w/2, b.y+b.h/2); ctx.textAlign='left'; }
+
+function drawTable(card,x,y,w){
+  const cols=[{key:'lineItem',label:'Line Item',w:Math.max(220,w*0.28)},{key:'cost',label:'Cost ($)',w:130},{key:'capPercent',label:'Contingency Cap (%)',w:160},{key:'budgetKey',label:'Add to Budget',w:180},{key:'apply',label:'Apply to Card Total',w:170},{key:'difference',label:'Difference ($)',w:140},{key:'actions',label:'Actions',w:100}];
+  let cx=x, cy=y; textM(13); ctx.textBaseline='middle';
+  cols.forEach(c=>{ ctx.strokeStyle=getCss('--border'); ctx.strokeRect(cx,cy,c.w,S.tableHeadH); ctx.fillStyle=getCss('--text'); ctx.fillText(c.label,cx+8, cy+S.tableHeadH/2); cx+=c.w; });
+  cy+=S.tableHeadH;
+
+  if(card.table.length===0){ ctx.strokeStyle=getCss('--border'); ctx.setLineDash([4,4]); ctx.strokeRect(x,cy,w,S.tableRowH); ctx.setLineDash([]); muted(13); ctx.textBaseline='middle'; ctx.textAlign='center'; ctx.fillText('No rows yet. Use “+ Add Row”.', x+w/2, cy+S.tableRowH/2); ctx.textAlign='left'; return S.tableHeadH + S.tableRowH + S.pad; }
+
+  card.table.forEach((r)=>{
+    let cx2=x;
+    // Line
+    ctx.strokeStyle=getCss('--border'); ctx.strokeRect(cx2,cy,cols[0].w,S.tableRowH); textR(14); ctx.textBaseline='middle'; ctx.fillStyle=getCss('--text'); ctx.save(); ctx.beginPath(); ctx.rect(cx2+8,cy,cols[0].w-16,S.tableRowH); ctx.clip(); ctx.fillText(String(r.lineItem||''), cx2+8, cy+S.tableRowH/2); ctx.restore(); addRegion({x:cx2,y:cy,w:cols[0].w,h:S.tableRowH,cursor:'text',onClick:()=>{ const v=prompt('Line Item', r.lineItem||''); if(v!=null){ r.lineItem=v; saveAll(); draw(); }}}); cx2+=cols[0].w;
+    // Cost
+    ctx.strokeRect(cx2,cy,cols[1].w,S.tableRowH); ctx.fillText(formatCurrency(r.cost||0), cx2+8, cy+S.tableRowH/2); addRegion({x:cx2,y:cy,w:cols[1].w,h:S.tableRowH,cursor:'text',onClick:()=>{ const v=prompt('Cost ($)', formatCurrency(r.cost||0)); if(v!=null){ r.cost=Math.max(0,parseCurrency(v)); saveAll(); draw(); }}}); cx2+=cols[1].w;
+    // Cap
+    ctx.strokeRect(cx2,cy,cols[2].w,S.tableRowH); ctx.fillText(String(Number(r.capPercent||0)), cx2+8, cy+S.tableRowH/2); addRegion({x:cx2,y:cy,w:cols[2].w,h:S.tableRowH,cursor:'text',onClick:()=>{ const v=prompt('Contingency Cap (%)', String(r.capPercent||0)); if(v!=null){ r.capPercent=clamp(Number(v)||0,0,1000); saveAll(); draw(); }}}); cx2+=cols[2].w;
+    // Budget key
+    ctx.strokeRect(cx2,cy,cols[3].w,S.tableRowH); const label=(r.budgetKey==='none')?'None':(card.categories.find(c=>c.key===r.budgetKey)?.label||'None'); ctx.fillText(label, cx2+8, cy+S.tableRowH/2); addRegion({x:cx2,y:cy,w:cols[3].w,h:S.tableRowH,cursor:'pointer',onClick:()=>{ const opts=['none',...card.categories.map(c=>c.key)]; const v=prompt(`Add to Budget (options: ${opts.join(', ')})`, r.budgetKey||'none'); if(v!=null && opts.includes(v)){ r.budgetKey=v; saveAll(); draw(); }}}); cx2+=cols[3].w;
+    // Apply
+    ctx.strokeRect(cx2,cy,cols[4].w,S.tableRowH); const bx=cx2+cols[4].w-74, by=cy+(S.tableRowH-22)/2, bw=22, bh=22; rr(bx,by,bw,bh,4); ctx.strokeStyle=getCss('--border'); ctx.stroke(); if(r.apply){ ctx.fillStyle=getCss('--brand'); ctx.fillRect(bx+4,by+4,bw-8,bh-8); } muted(13); ctx.textBaseline='middle'; ctx.fillStyle=getCss('--muted'); ctx.fillText('Apply', bx-52, by+bh/2); addRegion({x:bx,y:by,w:bw,h:bh,cursor:'pointer',onClick:()=>{ r.apply=!r.apply; saveAll(); draw(); }}); cx2+=cols[4].w;
+    // Diff
+    ctx.strokeRect(cx2,cy,cols[5].w,S.tableRowH); const diff=(r.cost||0)-((r.cost||0)*(Number(r.capPercent||0))/100); ctx.textAlign='right'; ctx.fillStyle=getCss('--text'); ctx.fillText(formatCurrency(diff), cx2+cols[5].w-8, cy+S.tableRowH/2); ctx.textAlign='left'; cx2+=cols[5].w;
+    // Actions
+    ctx.strokeRect(cx2,cy,cols[6].w,S.tableRowH); const del={x:cx2+cols[6].w-74,y:cy+(S.tableRowH-28)/2,w:66,h:28}; rr(del.x,del.y,del.w,del.h,8); ctx.strokeStyle=getCss('--border'); ctx.stroke(); textM(13); ctx.textAlign='center'; ctx.fillStyle=getCss('--text'); ctx.fillText('Delete', del.x+del.w/2, del.y+del.h/2); ctx.textAlign='left'; addRegion({x:del.x,y:del.y,w:del.w,h:del.h,cursor:'pointer',onClick:()=>{ card.table = card.table.filter(z=>z!==r); saveAll(); draw(); }}); cy+=S.tableRowH;
+  });
+  return S.tableHeadH + Math.max(1, card.table.length)*S.tableRowH + S.pad;
+}
+
+/* =========================== CSV Upload ============================ */
+let currentCsvCard=null;
+csvInput.addEventListener('change',(ev)=>{
+  const f = ev.target.files[0];
+  if(!f||!currentCsvCard){ csvInput.value=''; return; }
+  const reader = new FileReader();
+  reader.onload = ()=>{
+    const text = String(reader.result||'');
+    const rows = parseCSV(text);
+    if(rows.length===0){ toast('Invalid CSV'); csvInput.value=''; return; }
+    rows.forEach(r=>{ currentCsvCard.table.push({ id:uid('row'), lineItem:r.line_item||'', cost:parseCurrency(r.cost||0), capPercent:Number(r.cap_percent||0), budgetKey:(r.add_to_budget||'none').trim(), apply:false }); });
+    saveAll(); draw(); toast(`Uploaded ${rows.length} rows`);
+    csvInput.value=''; currentCsvCard=null;
+  };
+  reader.readAsText(f);
+});
+function parseCSV(text){ const lines=text.trim().split(/\r?\n/); if(lines.length<2) return []; const headers=splitCSVLine(lines[0]).map(s=>s.trim().toLowerCase()); const out=[]; for(let i=1;i<lines.length;i++){ const cols=splitCSVLine(lines[i]); if(cols.length===0) continue; const o={}; headers.forEach((h,idx)=>o[h]=cols[idx]??''); out.push(o);} return out; }
+function splitCSVLine(line){ const out=[], re=/\s*(?:"([^"]*)"|([^",]*))\s*(,|$)/g; let m; while((m=re.exec(line))!==null){ out.push(m[1] ?? m[2]); if(m[3]!==',') break; } return out; }
+
+/* =========================== Actions ============================ */
+function addNewCard(){
+  const base = structuredClone(defaultCards[0]);
+  base.id = uid('card');
+  base.title = 'Budget ' + (state.cards.length+1);
+  base.pinned = true; base.expanded=false; base.expanded2=false; base.table=[];
+  state.cards.push(base); saveAll(); draw(); toast('Card added');
+}
+
+/* =========================== Toast ============================ */
+function toast(msg){
+  const W=canvas.clientWidth, H=canvas.clientHeight; const start=performance.now();
+  function tick(){ const el=performance.now()-start; if(el>1200){ draw(); return; } draw(); const t=msg; textM(13); const tw=ctx.measureText(t).width; const bw=tw+28,bh=34,bx=(W-bw)/2,by=H-70; rr(bx,by,bw,bh,10); ctx.globalAlpha=.92; ctx.fillStyle='#111827'; ctx.fill(); ctx.globalAlpha=1; ctx.fillStyle='#fff'; ctx.textBaseline='middle'; ctx.textAlign='center'; ctx.fillText(t,bx+bw/2,by+bh/2); ctx.textAlign='left'; requestAnimationFrame(tick); }
+  tick();
+}
+
+/* =========================== Boot ============================ */
+setDPR(); draw();
+</script>
+</body>
+</html>
