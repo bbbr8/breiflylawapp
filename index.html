@@ -57,7 +57,7 @@ addEventListener('resize', ()=>{ setDPR(); draw(); });
 function uid(p){ return `${p}_${Math.random().toString(36).slice(2,9)}`; }
 function blankRow(){ return { id: uid('row'), lineItem:'', cost:0, capPercent:0, budgetKey:'none', apply:false }; }
 function load(k,def){ try{ return JSON.parse(localStorage.getItem(k) || JSON.stringify(def)); }catch{ return def; } }
-function save(k,v){ localStorage.setItem(k, JSON.stringify(v)); }
+function save(k,v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(err){ console.error(err); toast('Failed to save'); } }
 
 const defaultCards = [
   {
@@ -105,7 +105,11 @@ const state = {
   layout: load('briefly.canvas.layout', {stack:false}),
   ui: { menuOpen:false }
 };
-function saveAll(){ save('briefly.canvas.cards', state.cards); save('briefly.canvas.layout', state.layout); }
+function saveAll(){
+  // Save each slice individually so a failure doesn't prevent others
+  save('briefly.canvas.cards', state.cards);
+  save('briefly.canvas.layout', state.layout);
+}
 
 /* =========================== Hit Regions ============================ */
 let regions = [];
